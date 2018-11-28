@@ -2,6 +2,7 @@ import numpy as np
 import pickle
 
 SEQUENCE_ORDER = {'A': 0, 'G': 1, 'T': 2, 'C': 3}
+NUM_HISTONE_MODS = 5
 
 """
 The Sequence class encapsulates 1-D information on a region of DNA: the genome
@@ -27,12 +28,10 @@ class Sequence:
         Returns a numpy array of size k x n representing the histone modifications
         to the sequence.
         """
-        mod_arrays = []
+        mod_arrays = np.zeros((NUM_HISTONE_MODS, len(self.seq)))
         for histone, start, end in self.histone_mods:
-            while histone >= len(mod_arrays):
-                mod_arrays.append(np.zeros((len(self.seq),)))
-            mod_arrays[histone][start:end] = 1
-        return np.array(mod_arrays)
+            mod_arrays[histone,start:end] = 1
+        return mod_arrays
 
     def range(self):
         """Returns the range of loci for which data is available in this Sequence."""
@@ -50,6 +49,7 @@ class Sequence:
         """
         dna_mat = np.zeros((4, len(self.seq)))
         for i, c in enumerate(self.seq):
+            if c not in SEQUENCE_ORDER: continue
             dna_mat[SEQUENCE_ORDER[c], i] = 1
 
         return np.vstack([dna_mat, self.process_histone_modifications()])
@@ -64,13 +64,16 @@ class InteractionMatrix:
         identifier: a string identifier (may be of the form 'chr:start:end')
         data: a list of tuples (x, y, val) where x and y are loci, and val is
             the value of the interaction matrix
+        * throws a ValueError if the difference between all available loci is
+          not equal to the inferred resolution
         """
         self.identifier = identifier
         xs = sorted(set(x for x, y, f in data))
         self.data = {(x, y): f for x, y, f in data}
         # Determine the resolution of the data
         self.resolution = xs[1] - xs[0]
-        assert all(xs[i] - xs[i - 1] == self.resolution for i in range(1, len(xs)))
+        if not all(xs[i] - xs[i - 1] == self.resolution for i in range(1, len(xs))):
+            raise ValueError("missing data: distances between available loci do not match inferred resolution")
 
     def range(self):
         """
