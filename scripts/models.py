@@ -1,7 +1,9 @@
 import numpy as np
 import pickle
+from scipy import interpolate
 
 SEQUENCE_ORDER = {'A': 0, 'G': 1, 'T': 2, 'C': 3}
+NUM_HISTONE_MODS = 5
 
 """
 The Sequence class encapsulates 1-D information on a region of DNA: the genome
@@ -27,12 +29,10 @@ class Sequence:
         Returns a numpy array of size k x n representing the histone modifications
         to the sequence.
         """
-        mod_arrays = []
+        mod_arrays = np.zeros((NUM_HISTONE_MODS, len(self.seq)))
         for histone, start, end in self.histone_mods:
-            while histone >= len(mod_arrays):
-                mod_arrays.append(np.zeros((len(self.seq),)))
-            mod_arrays[histone][start:end] = 1
-        return np.array(mod_arrays)
+            mod_arrays[histone,start:end] = 1
+        return mod_arrays
 
     def range(self):
         """Returns the range of loci for which data is available in this Sequence."""
@@ -50,6 +50,7 @@ class Sequence:
         """
         dna_mat = np.zeros((4, len(self.seq)))
         for i, c in enumerate(self.seq):
+            if c not in SEQUENCE_ORDER: continue
             dna_mat[SEQUENCE_ORDER[c], i] = 1
 
         return np.vstack([dna_mat, self.process_histone_modifications()])
@@ -64,13 +65,17 @@ class InteractionMatrix:
         identifier: a string identifier (may be of the form 'chr:start:end')
         data: a list of tuples (x, y, val) where x and y are loci, and val is
             the value of the interaction matrix
+        * throws a ValueError if the difference between all available loci is
+          not equal to the inferred resolution
         """
         self.identifier = identifier
         xs = sorted(set(x for x, y, f in data))
         self.data = {(x, y): f for x, y, f in data}
         # Determine the resolution of the data
         self.resolution = xs[1] - xs[0]
-        assert all(xs[i] - xs[i - 1] == self.resolution for i in range(1, len(xs)))
+        if not all(xs[i] - xs[i - 1] == self.resolution for i in range(1, len(xs))):
+            raise ValueError("missing data: distances between available loci do not match inferred resolution")
+        self.build_interpolator()
 
     def range(self):
         """
@@ -80,16 +85,80 @@ class InteractionMatrix:
         xs = sorted(set(x for x, y in self.data.keys()))
         return (min(xs), max(xs) + self.resolution)
 
-    def value_at(self, x, y):
+    def build_interpolator(self):
         """
-        Returns the interaction matrix value at the given locus.
+        Builds an interpolator for this interaction matrix. Values that are
+        not present are omitted from the input to the interpolator, so they will
+        not interfere with approximation of those missing values.
+        """
+        r = self.range()
+        loci_x, loci_y = np.meshgrid(np.arange(r[0], r[1], self.resolution), np.arange(r[0], r[1], self.resolution))
+        loci_coords = []
+        loci_values = []
+        for x, y in zip(loci_x.ravel(), loci_y.ravel()):
+            # Find the value in the data source
+            near_x = int(x / self.resolution) * self.resolution
+            near_y = int(y / self.resolution) * self.resolution
+            if (near_x, near_y) not in self.data:
+                near_x, near_y = near_y, near_x
+            if (near_x, near_y) not in self.data:
+                continue
+
+            # Add value to interpolator if present
+            val = self.data[(near_x, near_y)]
+            if val != 0.0:
+                loci_coords.append([x, y])
+                loci_values.append(val)
+
+        # Build linear interpolator
+        self.interpolator = interpolate.LinearNDInterpolator(loci_coords, loci_values)
+
+    def coordinates_grid(self, resolution=None):
+        """
+        Helper function that returns a grid of coordinates for which data is
+        available in this interaction matrix, at the given resolution. If
+        resolution is None, the matrix's native resolution is used.
+
+        Returns: a tuple containing coordinates as a matrix of dimension n x 2
+            (n is the total number of points, dim ** 2), and dim, the number of
+            values along each side of the grid square
+        """
+        if resolution is None:
+            resolution = self.resolution
+        r = self.range()
+        intervals = np.arange(r[0], r[1] - self.resolution + 1, resolution)
+        loci_x, loci_y = np.meshgrid(intervals, intervals)
+        return np.hstack([loci_x.reshape(-1, 1), loci_y.reshape(-1, 1)]), intervals.shape[0]
+
+    def values_grid(self, resolution=None):
+        """
+        Helper function that returns a grid of (interpolated) values in the Hi-C
+        map at the given resolution. If resolution is None, the matrix's native
+        resolution is used.
+
+        Returns: Hi-C interaction values as a matrix of dimension n x n, where n
+            is the number of steps along this interaction matrix for which data
+            is available.
+        """
+        grid, dim = self.coordinates_grid(resolution)
+        return self.value_at(grid[:,0], grid[:,1]).reshape(dim, dim)
+
+    def raw_value_at(self, x, y):
+        """
+        Returns the raw (un-interpolated) value at the given locus.
         """
         near_x = int(x / self.resolution) * self.resolution
         near_y = int(y / self.resolution) * self.resolution
         if (near_x, near_y) not in self.data:
             near_x, near_y = near_y, near_x
-
         if (near_x, near_y) not in self.data:
             print("data for {},{} not found in interaction matrix ({},{})".format(x, y, near_x, near_y))
             return 0
         return self.data[(near_x, near_y)]
+
+    def value_at(self, x, y):
+        """
+        Returns the interaction matrix value at the given locus. x and y may
+        be scalars or same-length vectors.
+        """
+        return self.interpolator(x, y)
