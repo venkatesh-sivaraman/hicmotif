@@ -46,7 +46,7 @@ class RNNModel:
         epochs: number of epochs to train for
         """
         # TODO: Split X into digestible-length fragments
-        self.model.fit(Xs, Ys, epochs=epochs)
+        self.model.fit(Xs, Ys, epochs=epochs, batch_size=100)
 
 if __name__ == '__main__':
     import models

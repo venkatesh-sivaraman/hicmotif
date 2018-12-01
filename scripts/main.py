@@ -88,7 +88,7 @@ def generate_X(data, seq_length=100, spacing=100):
             start_idx = spacing * sample_idx
             Xs.append(seq_array[:,start_idx:start_idx + seq_length])
 
-    return np.concatenate(Xs), ranges
+    return np.stack(Xs), ranges
 
 def train_iteration(X, ranges, data, pairwise_interactions=None, rnn_params={}):
     """
