@@ -48,6 +48,14 @@ class RNNModel:
         # TODO: Split X into digestible-length fragments
         self.model.fit(Xs, Ys, epochs=epochs, batch_size=100)
 
+    def predict(self, X):
+        """
+        Produces a vector of state assignments given the X matrix (should be
+        shape m x k x n - see train() for more information).
+        """
+        Y_one_hot = self.model.predict(X)
+        return np.argmax(Y_one_hot, axis=1)
+
 if __name__ == '__main__':
     import models
     from Bio import SeqIO

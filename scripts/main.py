@@ -4,6 +4,10 @@ import rnn
 import models
 import pickle
 from Bio import SeqIO
+from update_state_assignments import state_asg, normalized_diff
+from scipy import interpolate
+import multiprocessing as mp
+from functools import partial
 
 def load_pickles(filename):
     """
@@ -16,7 +20,7 @@ def load_pickles(filename):
             except EOFError:
                 break
 
-def load_data(hic_dir, seq_path, histone_path, seq_format='fasta'):
+def load_data(hic_dir, seq_path, histone_path, seq_format='fasta', test=False):
     """
     Returns a list of (Sequence, InteractionMatrix) tuples given the Hi-C data,
     the DNA sequences, and histone modifications in the paths provided.
@@ -36,6 +40,7 @@ def load_data(hic_dir, seq_path, histone_path, seq_format='fasta'):
     print("Reading histone data...")
     for id, histone_data in load_pickles(histone_path):
         histones[id.replace('chr', '')] = histone_data
+        if test and len(histones) == 100: break
 
     # Read sequence data
     print("Reading sequence data...")
@@ -47,6 +52,7 @@ def load_data(hic_dir, seq_path, histone_path, seq_format='fasta'):
 
         seq = models.Sequence(id, str(record.seq), histones[id])
         sequences[id] = seq
+        if test and len(sequences) == len(histones): break
 
     # Read Hi-C data
     print("Reading Hi-C data...")
@@ -66,6 +72,7 @@ def load_data(hic_dir, seq_path, histone_path, seq_format='fasta'):
             except ValueError:
                 num_omitted += 1
         file_idx += 1
+        if test and len(results) == len(sequences): break
 
     print("Loaded {} items - {} had missing data.".format(len(results), num_omitted))
     return [val for key, val in sorted(results.items())]
@@ -82,7 +89,7 @@ def generate_X(data, seq_length=100, spacing=100):
     ranges = []
     for seq, _ in data:
         seq_array = seq.to_array()
-        num_samples = seq_array.shape[1] // spacing
+        num_samples = (seq_array.shape[1] - seq_length) // spacing - 1
         ranges.append((len(Xs), len(Xs) + num_samples))
         for sample_idx in range(num_samples):
             start_idx = spacing * sample_idx
@@ -90,28 +97,108 @@ def generate_X(data, seq_length=100, spacing=100):
 
     return np.stack(Xs), ranges
 
-def train_iteration(X, ranges, data, pairwise_interactions=None, rnn_params={}):
+def interpolate_state_labels(state_labels, original_spacing, new_spacing):
+    """
+    Interpolates the given list of state labels from one spacing into another.
+    """
+    max_x = state_labels.shape[0] * original_spacing
+    f = interpolate.interp1d(np.arange(0, max_x, original_spacing), state_labels, kind='nearest')
+    return f(np.arange(0, max_x - original_spacing + 1, new_spacing))
+
+def estimate_pairwise_interactions(data, ranges, Y, n_labels, spacing):
+    """
+    Produces a pairwise interaction matrix R of size n_labels x n_labels. Each
+    element is the ML estimate of the interaction frequency between the states
+    represented by the row and column.
+    """
+    R = np.zeros((n_labels, n_labels))
+    counts = np.zeros((n_labels, n_labels))
+    for (start, stop), (_, mat) in zip(ranges, data):
+        r = mat.range()
+        # Get meshgrid for interaction matrix
+        intervals = np.arange(r[0], r[0] + (stop - start - 1) * spacing, spacing)
+        loci_x, loci_y = np.meshgrid(intervals, intervals)
+        # Get meshgrid for states
+        states_1, states_2 = np.meshgrid(Y[start:stop - 1], Y[start:stop - 1])
+        vals = np.log(1 + mat.value_at(loci_x, loci_y))
+
+        # Update counts and interaction frequency estimates
+        for s1 in range(n_labels):
+            for s2 in range(n_labels):
+                flags = np.logical_and(states_1 == s1, states_2 == s2)
+                counts[s1, s2] += np.sum(flags)
+                R[s1, s2] += np.sum(np.where(flags, vals, 0.0))
+
+    return R / counts
+
+
+def dp_worker(R, coarse_spacing, spacing, seq_length, batch_item):
+    _, H = batch_item
+    print(H.identifier)
+    state_labels = state_asg(H, R, normalized_diff, coarse_spacing)
+    # Save the state labels that begin after the first seq_length region
+    trimmed = interpolate_state_labels(state_labels, coarse_spacing, spacing)[seq_length // spacing:]
+    return H.identifier, trimmed
+
+def train_iteration(data, R, seq_length=100, spacing=10, rnn_params={}, batch_size=20):
     """
     Perform one iteration of training, using the initial pairwise interaction
     matrix to generate a state labeling for each interaction matrix, then training
     an RNN using the X matrix and the inferred state labels.
 
-    X: a numpy array with dimension m x k x n, where m is the number of training
-        examples, k is the number of features per base, and n is the sequence
-        length.
-    ranges: the ranges of rows in X corresponding to each item in data.
     data: a list of tuples (Sequence, InteractionMatrix) as generated from
         load_data.
-    pairwise_interactions: the initial pairwise interaction matrix. The shape
-        should be l x l, where l indicates the number of states to infer.
+    R: the initial pairwise interaction matrix. The shape should be l x l, where
+        l indicates the number of states to infer.
     rnn_params: keyword arguments to be passed to the RNNModel constructor.
+    batch_size: the number of elements of data to select randomly to use in this
+        iteration.
 
     Return values TODO
     """
-    # TODO
-    pass
+    n_labels = R.shape[0]
+
+    # Generate a random batch of data
+    indexes = np.random.choice(len(data), size=(batch_size,), replace=False)
+    batch = [data[i] for i in indexes]
+    X, ranges = generate_X(batch, seq_length=seq_length, spacing=spacing)
+
+    print(X.shape)
+    # Run DP algorithm
+    coarse_spacing = spacing * 10
+    Y_single = np.zeros((X.shape[0],)) # Each element corresponds to one row of X
+    pool = mp.Pool(processes=4)
+    worker = partial(dp_worker, R, coarse_spacing, spacing, seq_length)
+
+    for i, (id, trimmed) in enumerate(pool.imap(worker, batch, chunksize=2)):
+    #for i, (_, mat) in enumerate(batch):
+        # coarse_spacing = spacing * 10
+        # state_labels = state_asg(mat, R, normalized_diff, coarse_spacing)
+        # # Save the state labels that begin after the first seq_length region
+        # trimmed = interpolate_state_labels(state_labels, coarse_spacing, spacing)[seq_length // spacing:]
+        start, stop = ranges[i]
+        #print(state_labels, state_labels.shape, trimmed.shape, start, stop)
+        #TODO: Don't allow these cases to pass
+        if trimmed.shape[0] < stop - start: continue
+        # Store predicted state labels in Y vector
+        Y_single[start:stop] = trimmed[:stop - start]
+
+    # Convert Y_single to one-hot representation
+    Y = np.zeros((X.shape[0], n_labels))
+    for i in range(Y_single.shape[0]):
+        Y[i,Y_single[i]] = 1
+
+    print(X.shape, Y.shape)
+
+    model = rnn.RNNModel(n_labels=n_labels, n_features=X.shape[1], sequence_length=seq_length, **rnn_params)
+    model.create()
+    model.train(X, Y, epochs=5)
+    Y_pred = model.predict(X)
+    print(Y_pred)
+
+    return estimate_pairwise_interactions(batch, ranges, Y_pred, n_labels, spacing)
+
 
 if __name__ == '__main__':
-    data = load_data("../data/GM12878_10k", "../data/loop_sequences_GM12878.fasta", "../data/epigenomic_tracks/GM12878.pickle")
-    X, ranges = generate_X(data[:500])
-    print(X.shape, ranges)
+    data = load_data("../data/GM12878_10k", "../data/loop_sequences_GM12878.fasta", "../data/epigenomic_tracks/GM12878.pickle", test=True)
+    train_iteration(data, np.array([[7, 2], [2, 7]]), spacing=50)

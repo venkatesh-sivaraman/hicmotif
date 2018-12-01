@@ -11,15 +11,16 @@ def normalized_diff(s_i, s_j, H_ij, R):
     else:
         return abs(H_ij- R[s_i][s_j])/ H_ij
 
-def state_asg(H, R, f):
+def state_asg(H, R, f, res):
     """ Returns the state assignment of the interaction matrix H when
     given H at resolution res, the state interaction score matrix R, and the scoring
     function
     """
     l = R.shape[0]
-    res = H.resolution
-    start, stop = H.range()
-    n = (stop-start)//res
+    _, n = H.coordinates_grid(res)
+    start = H.range()[0]
+    #stop = start + n * res
+    #n = (stop-start)//res
     scores = np.zeros((l,n))
     parent = np.zeros((l,n))
 
@@ -43,7 +44,7 @@ def state_asg(H, R, f):
         parent_state = int(parent[state_curr][p])
         state_curr = parent_state
         path.append(parent_state)
-    return list(reversed(path))
+    return np.array(list(reversed(path)))
 
 def predicted_matrix_worker(S, R):
     """Returned matrix of predicted values given the state assignments S
