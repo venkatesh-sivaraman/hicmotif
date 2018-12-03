@@ -70,13 +70,12 @@ class RNNModel:
         vals, counts = np.unique(Y, axis=0, return_counts=True)
         min_count = np.min(counts)
         num_rows = min_count * len(vals)
-        new_X = np.zeros((num_rows, X.shape[1]))
+        new_X = np.zeros((num_rows, X.shape[1], X.shape[2]))
         new_Y = np.zeros((num_rows, Y.shape[1]))
-        for i in enumerate(len(vals)):
+        for i in range(len(vals)):
             indexes = np.random.choice(np.argwhere(Y[:,i] == 1).flatten(), size=min_count, replace=False)
             new_X[i * min_count: (i + 1) * min_count] = X[indexes]
             new_Y[i * min_count: (i + 1) * min_count] = Y[indexes]
-        print(np.unique(new_Y, axis=0, return_counts=True))
         return new_X, new_Y
 
 

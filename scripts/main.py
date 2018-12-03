@@ -4,7 +4,7 @@ import rnn
 import models
 import pickle
 from Bio import SeqIO
-from update_state_assignments import state_asg, normalized_diff
+from update_state_assignments import state_asg, normalized_diff, penalty
 from scipy import interpolate
 import multiprocessing as mp
 from functools import partial
@@ -116,9 +116,9 @@ def estimate_pairwise_interactions(data, ranges, Y, n_labels, spacing):
     for (start, stop), (_, mat) in zip(ranges, data):
         r = mat.range()
         # Get meshgrid for interaction matrix
-        loci_x, loci_y, dim = mat.meshgrid(spacing)
+        loci_x, loci_y, dim = mat.meshgrid(spacing, max_dim=stop - start)
         if dim > stop - start:
-            print("Too large dimension, skipping")
+            print("Too large dimension, skipping: {} vs {} - {}".format(dim, stop, start))
             continue
 
         # Get meshgrid for states
@@ -138,14 +138,14 @@ def estimate_pairwise_interactions(data, ranges, Y, n_labels, spacing):
 
 
 def dp_worker(R, coarse_spacing, spacing, seq_length, batch_item):
-    _, H = batch_item
+    (_, H), rnn_labels = batch_item
     print(H.identifier)
-    state_labels = state_asg(H, R, normalized_diff, coarse_spacing)
+    state_labels = state_asg(H, R, normalized_diff, penalty, coarse_spacing, rnn_labels)
     # Save the state labels that begin after the first seq_length region
     trimmed = interpolate_state_labels(state_labels, coarse_spacing, spacing)[seq_length // spacing:]
     return H.identifier, trimmed
 
-def train_iteration(data, R, seq_length=100, spacing=10, rnn_params={}, batch_size=40):
+def train_iteration(data, R, seq_length=100, spacing=10, rnn_params={}, batch_size=40, old_rnn=None):
     """
     Perform one iteration of training, using the initial pairwise interaction
     matrix to generate a state labeling for each interaction matrix, then training
@@ -174,8 +174,12 @@ def train_iteration(data, R, seq_length=100, spacing=10, rnn_params={}, batch_si
     Y_single = np.zeros((X.shape[0],), dtype=int) # Each element corresponds to one row of X
     pool = mp.Pool(processes=4)
     worker = partial(dp_worker, R, coarse_spacing, spacing, seq_length)
+    # Vectors corresponding to states for each interaction matrix
+    Y_pred = old_rnn.predict(X) if old_rnn is not None else None
+    rnn_iter = (Y_pred[start:stop] for start, stop in ranges) if old_rnn is not None else (None for _ in ranges)
+    print("Prediction composition:", np.unique(Y_pred, return_counts=True))
 
-    for i, (id, trimmed) in enumerate(pool.imap(worker, batch, chunksize=2)):
+    for i, (id, trimmed) in enumerate(pool.imap(worker, zip(batch, rnn_iter), chunksize=2)):
         start, stop = ranges[i]
         #TODO: Don't allow these cases to pass
         if trimmed.shape[0] < stop - start: continue
@@ -193,9 +197,8 @@ def train_iteration(data, R, seq_length=100, spacing=10, rnn_params={}, batch_si
     model.create()
     model.train(X, Y, epochs=5)
     Y_pred = model.predict(X)
-    print(Y_pred)
 
-    return estimate_pairwise_interactions(batch, ranges, Y_pred, n_labels, spacing)
+    return model, estimate_pairwise_interactions(batch, ranges, Y_pred, n_labels, spacing)
 
 def initial_pairwise_interactions(data, n_labels, seq_length, spacing):
     """
@@ -210,13 +213,17 @@ def initial_pairwise_interactions(data, n_labels, seq_length, spacing):
     return np.array([[7, 4], [4, 7]])
 
 if __name__ == '__main__':
-    data = load_data("../data/GM12878_10k", "../data/loop_sequences_GM12878.fasta", "../data/epigenomic_tracks/GM12878.pickle")
+    test = sys.argv[1] == "test"
+    data = load_data("../data/GM12878_10k", "../data/loop_sequences_GM12878.fasta", "../data/epigenomic_tracks/GM12878.pickle", test=test)
     seq_length = 100
     spacing = 50
     Rs = [initial_pairwise_interactions(data, 3, seq_length, spacing)]
+    old_rnn = None
     print("Initial:", Rs[-1])
     for i in range(10):
         print("Iteration", i)
-        Rs.append(train_iteration(data, Rs[-1], seq_length=seq_length, spacing=spacing))
+        new_rnn, R = train_iteration(data, Rs[-1], seq_length=seq_length, spacing=spacing, old_rnn=old_rnn)
+        Rs.append(R)
+        old_rnn = new_rnn
         print(Rs[-1])
     print(Rs)

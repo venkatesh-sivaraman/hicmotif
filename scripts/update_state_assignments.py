@@ -13,7 +13,7 @@ def normalized_diff(s_i, s_j, H_ij, R):
 
 def penalty(s_dp, s_rnn):
     if s_dp != s_rnn:
-        return 0.75
+        return 1.25
     else:
         return 1
 
@@ -38,7 +38,7 @@ def state_asg(H, R, f, penalty, res, rnn_states=None):
                 for p in reversed(range(pos)):
                     score += f(state_curr, parent_state, H_vals[pos][p], R)
                     parent_state = int(parent[parent_state][p])
-                if rnn_states != None:
+                if rnn_states is not None:
                     score *= penalty(state_curr, rnn_states[pos])
                 cand_score.append(score)
             scores[state_curr][pos] = min(cand_score)
