@@ -116,11 +116,16 @@ def estimate_pairwise_interactions(data, ranges, Y, n_labels, spacing):
     for (start, stop), (_, mat) in zip(ranges, data):
         r = mat.range()
         # Get meshgrid for interaction matrix
-        intervals = np.arange(r[0], r[0] + (stop - start - 1) * spacing, spacing)
-        loci_x, loci_y = np.meshgrid(intervals, intervals)
+        loci_x, loci_y, dim = mat.meshgrid(spacing)
+        if dim > stop - start:
+            print("Too large dimension, skipping")
+            continue
+
         # Get meshgrid for states
-        states_1, states_2 = np.meshgrid(Y[start:stop - 1], Y[start:stop - 1])
+        states_1, states_2 = np.meshgrid(Y[start:start + dim], Y[start:start + dim])
         vals = np.log(1 + mat.value_at(loci_x, loci_y))
+        if np.sum(np.isnan(vals)) > 0:
+            print("Shouldn't happen")
 
         # Update counts and interaction frequency estimates
         for s1 in range(n_labels):
@@ -140,7 +145,7 @@ def dp_worker(R, coarse_spacing, spacing, seq_length, batch_item):
     trimmed = interpolate_state_labels(state_labels, coarse_spacing, spacing)[seq_length // spacing:]
     return H.identifier, trimmed
 
-def train_iteration(data, R, seq_length=100, spacing=10, rnn_params={}, batch_size=20):
+def train_iteration(data, R, seq_length=100, spacing=10, rnn_params={}, batch_size=40):
     """
     Perform one iteration of training, using the initial pairwise interaction
     matrix to generate a state labeling for each interaction matrix, then training
@@ -166,25 +171,19 @@ def train_iteration(data, R, seq_length=100, spacing=10, rnn_params={}, batch_si
     print(X.shape)
     # Run DP algorithm
     coarse_spacing = spacing * 10
-    Y_single = np.zeros((X.shape[0],)) # Each element corresponds to one row of X
+    Y_single = np.zeros((X.shape[0],), dtype=int) # Each element corresponds to one row of X
     pool = mp.Pool(processes=4)
     worker = partial(dp_worker, R, coarse_spacing, spacing, seq_length)
 
     for i, (id, trimmed) in enumerate(pool.imap(worker, batch, chunksize=2)):
-    #for i, (_, mat) in enumerate(batch):
-        # coarse_spacing = spacing * 10
-        # state_labels = state_asg(mat, R, normalized_diff, coarse_spacing)
-        # # Save the state labels that begin after the first seq_length region
-        # trimmed = interpolate_state_labels(state_labels, coarse_spacing, spacing)[seq_length // spacing:]
         start, stop = ranges[i]
-        #print(state_labels, state_labels.shape, trimmed.shape, start, stop)
         #TODO: Don't allow these cases to pass
         if trimmed.shape[0] < stop - start: continue
         # Store predicted state labels in Y vector
         Y_single[start:stop] = trimmed[:stop - start]
 
     # Convert Y_single to one-hot representation
-    Y = np.zeros((X.shape[0], n_labels))
+    Y = np.zeros((X.shape[0], n_labels), dtype=int)
     for i in range(Y_single.shape[0]):
         Y[i,Y_single[i]] = 1
 
@@ -198,7 +197,26 @@ def train_iteration(data, R, seq_length=100, spacing=10, rnn_params={}, batch_si
 
     return estimate_pairwise_interactions(batch, ranges, Y_pred, n_labels, spacing)
 
+def initial_pairwise_interactions(data, n_labels, seq_length, spacing):
+    """
+    Generates an random initial R matrix of dimension n_labels x n_labels given
+    the data.
+    """
+    # Generate a random batch of data
+    #seq, mat = data[np.random.choice(len(data))]
+
+    # Choose n_labels random positions
+    #positions =
+    return np.array([[7, 4], [4, 7]])
 
 if __name__ == '__main__':
-    data = load_data("../data/GM12878_10k", "../data/loop_sequences_GM12878.fasta", "../data/epigenomic_tracks/GM12878.pickle", test=True)
-    train_iteration(data, np.array([[7, 2], [2, 7]]), spacing=50)
+    data = load_data("../data/GM12878_10k", "../data/loop_sequences_GM12878.fasta", "../data/epigenomic_tracks/GM12878.pickle")
+    seq_length = 100
+    spacing = 50
+    Rs = [initial_pairwise_interactions(data, 3, seq_length, spacing)]
+    print("Initial:", Rs[-1])
+    for i in range(10):
+        print("Iteration", i)
+        Rs.append(train_iteration(data, Rs[-1], seq_length=seq_length, spacing=spacing))
+        print(Rs[-1])
+    print(Rs)

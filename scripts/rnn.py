@@ -1,5 +1,6 @@
 from keras.models import Sequential
 from keras.layers import Input, LSTM, Dense
+import numpy as np
 
 class RNNModel:
     """Wraps a Keras RNN model."""
@@ -36,7 +37,7 @@ class RNNModel:
         self.model.add(Dense(self.n_labels, activation='softmax'))
         self.model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
 
-    def train(self, Xs, Ys, epochs=10):
+    def train(self, Xs, Ys, epochs=10, balance=True):
         """
         Trains the model using the given X input data and labels Y.
 
@@ -44,9 +45,14 @@ class RNNModel:
             k is the number of features and n is the sequence length
         Ys: matrix of size m x l x n, where l is the number of labels
         epochs: number of epochs to train for
+        balance: whether to balance the Xs and Ys to have an equal number of
+            each Y label
         """
-        # TODO: Split X into digestible-length fragments
-        self.model.fit(Xs, Ys, epochs=epochs, batch_size=100)
+        if balance:
+            new_X, new_Y = self.balance(Xs, Ys)
+        else:
+            new_X, new_Y = X, Y
+        self.model.fit(new_X, new_Y, epochs=epochs, batch_size=100)
 
     def predict(self, X):
         """
@@ -55,6 +61,24 @@ class RNNModel:
         """
         Y_one_hot = self.model.predict(X)
         return np.argmax(Y_one_hot, axis=1)
+
+    def balance(self, X, Y):
+        """
+        Balances the given X and Y matrices so that there is an equal number of
+        each Y label.
+        """
+        vals, counts = np.unique(Y, axis=0, return_counts=True)
+        min_count = np.min(counts)
+        num_rows = min_count * len(vals)
+        new_X = np.zeros((num_rows, X.shape[1]))
+        new_Y = np.zeros((num_rows, Y.shape[1]))
+        for i in enumerate(len(vals)):
+            indexes = np.random.choice(np.argwhere(Y[:,i] == 1).flatten(), size=min_count, replace=False)
+            new_X[i * min_count: (i + 1) * min_count] = X[indexes]
+            new_Y[i * min_count: (i + 1) * min_count] = Y[indexes]
+        print(np.unique(new_Y, axis=0, return_counts=True))
+        return new_X, new_Y
+
 
 if __name__ == '__main__':
     import models

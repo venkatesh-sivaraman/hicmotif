@@ -113,6 +113,23 @@ class InteractionMatrix:
         # Build linear interpolator
         self.interpolator = interpolate.LinearNDInterpolator(loci_coords, loci_values)
 
+    def meshgrid(self, resolution=None):
+        """
+        Helper function that returns two grids of coordinates for which data is
+        available in this interaction matrix, at the given resolution. If
+        resolution is None, the matrix's native resolution is used.
+
+        Returns: a tuple containing the x coordinates in a grid, the y coordinates
+            in the grid, and dim, the number of values along each side of the
+            grid square
+        """
+        if resolution is None:
+            resolution = self.resolution
+        r = self.range()
+        intervals = np.arange(r[0], r[1] - self.resolution + 1, resolution)
+        loci_x, loci_y = np.meshgrid(intervals, intervals)
+        return loci_x, loci_y, intervals.shape[0]
+
     def coordinates_grid(self, resolution=None):
         """
         Helper function that returns a grid of coordinates for which data is
@@ -123,12 +140,8 @@ class InteractionMatrix:
             (n is the total number of points, dim ** 2), and dim, the number of
             values along each side of the grid square
         """
-        if resolution is None:
-            resolution = self.resolution
-        r = self.range()
-        intervals = np.arange(r[0], r[1] - self.resolution + 1, resolution)
-        loci_x, loci_y = np.meshgrid(intervals, intervals)
-        return np.hstack([loci_x.reshape(-1, 1), loci_y.reshape(-1, 1)]), intervals.shape[0]
+        loci_x, loci_y, dim = self.meshgrid(resolution)
+        return np.hstack([loci_x.reshape(-1, 1), loci_y.reshape(-1, 1)]), dim
 
     def values_grid(self, resolution=None):
         """
