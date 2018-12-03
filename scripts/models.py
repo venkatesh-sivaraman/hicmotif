@@ -113,13 +113,11 @@ class InteractionMatrix:
         # Build linear interpolator
         self.interpolator = interpolate.LinearNDInterpolator(loci_coords, loci_values)
 
-    def meshgrid(self, resolution=None, max_dim=None):
+    def meshgrid(self, resolution=None, start_val=None, max_dim=None):
         """
         Helper function that returns two grids of coordinates for which data is
         available in this interaction matrix, at the given resolution. If
-        resolution is None, the matrix's native resolution is used. If max_dim
-        is provided, the mesh grid will be limited to max_dim x max_dim (note:
-        it may be smaller).
+        resolution is None, the matrix's native resolution is used.
 
         Returns: a tuple containing the x coordinates in a grid, the y coordinates
             in the grid, and dim, the number of values along each side of the
@@ -128,10 +126,13 @@ class InteractionMatrix:
         if resolution is None:
             resolution = self.resolution
         r = self.range()
+        lower_bound = r[0]
+        if start_val is not None:
+            lower_bound += start_val
         upper_bound = r[1] - self.resolution + 1
         if max_dim is not None:
-            upper_bound = min(upper_bound, r[0] + resolution * max_dim)
-        intervals = np.arange(r[0], upper_bound, resolution)
+            upper_bound = min(upper_bound, lower_bound + max_dim * resolution)
+        intervals = np.arange(lower_bound, upper_bound, resolution)
         loci_x, loci_y = np.meshgrid(intervals, intervals)
         return loci_x, loci_y, intervals.shape[0]
 

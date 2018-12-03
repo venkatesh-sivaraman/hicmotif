@@ -12,10 +12,11 @@ def normalized_diff(s_i, s_j, H_ij, R):
         return abs(H_ij- R[s_i][s_j])/ H_ij
 
 def penalty(s_dp, s_rnn):
-    if s_dp != s_rnn:
-        return 1.25
+    return 1
+    '''if s_dp != s_rnn:
+        return 0.25
     else:
-        return 1
+        return 0'''
 
 def state_asg(H, R, f, penalty, res, rnn_states=None):
     """ Returns the state assignment of the interaction matrix H when

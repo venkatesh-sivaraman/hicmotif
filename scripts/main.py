@@ -87,9 +87,12 @@ def generate_X(data, seq_length=100, spacing=100):
     """
     Xs = []
     ranges = []
-    for seq, _ in data:
+    for seq, mat in data:
         seq_array = seq.to_array()
-        num_samples = (seq_array.shape[1] - seq_length) // spacing - 1
+        min_m, max_m = mat.range()
+        dim = ((max_m - mat.resolution + 1) - min_m) // spacing
+        num_samples = dim - seq_length // spacing #(min(start, seq_array.shape[1]) - seq_length) // spacing - 1
+        #print(stop - start, seq_array.shape[1] - seq_length, num_samples)
         ranges.append((len(Xs), len(Xs) + num_samples))
         for sample_idx in range(num_samples):
             start_idx = spacing * sample_idx
@@ -116,7 +119,7 @@ def estimate_pairwise_interactions(data, ranges, Y, n_labels, spacing):
     for (start, stop), (_, mat) in zip(ranges, data):
         r = mat.range()
         # Get meshgrid for interaction matrix
-        loci_x, loci_y, dim = mat.meshgrid(spacing, max_dim=stop - start)
+        loci_x, loci_y, dim = mat.meshgrid(spacing, start_val=(seq_length // spacing) * spacing, max_dim=stop - start)
         if dim > stop - start:
             print("Too large dimension, skipping: {} vs {} - {}".format(dim, stop, start))
             continue
@@ -142,8 +145,8 @@ def dp_worker(R, coarse_spacing, spacing, seq_length, batch_item):
     print(H.identifier)
     state_labels = state_asg(H, R, normalized_diff, penalty, coarse_spacing, rnn_labels)
     # Save the state labels that begin after the first seq_length region
-    trimmed = interpolate_state_labels(state_labels, coarse_spacing, spacing)[seq_length // spacing:]
-    return H.identifier, trimmed
+    trimmed = interpolate_state_labels(state_labels, coarse_spacing, spacing)
+    return H.identifier, trimmed[seq_length // spacing:]
 
 def train_iteration(data, R, seq_length=100, spacing=10, rnn_params={}, batch_size=40, old_rnn=None):
     """
@@ -158,8 +161,12 @@ def train_iteration(data, R, seq_length=100, spacing=10, rnn_params={}, batch_si
     rnn_params: keyword arguments to be passed to the RNNModel constructor.
     batch_size: the number of elements of data to select randomly to use in this
         iteration.
+    old_rnn: an RNNModel object, if available, whose predictions will be used
+        to bias the new DP algorithm's predicted state labels.
 
-    Return values TODO
+    Returns:
+        * an RNNModel object trained on a batch of the given data
+        * a new R matrix based on the RNNModel's predictions
     """
     n_labels = R.shape[0]
 
@@ -182,9 +189,14 @@ def train_iteration(data, R, seq_length=100, spacing=10, rnn_params={}, batch_si
     for i, (id, trimmed) in enumerate(pool.imap(worker, zip(batch, rnn_iter), chunksize=2)):
         start, stop = ranges[i]
         #TODO: Don't allow these cases to pass
-        if trimmed.shape[0] < stop - start: continue
+        if trimmed.shape[0] < stop - start:
+            print("Too big:", trimmed.shape[0], start, stop, stop - start)
+            continue
         # Store predicted state labels in Y vector
         Y_single[start:stop] = trimmed[:stop - start]
+
+    pool.close()
+    pool.join()
 
     # Convert Y_single to one-hot representation
     Y = np.zeros((X.shape[0], n_labels), dtype=int)
@@ -197,6 +209,7 @@ def train_iteration(data, R, seq_length=100, spacing=10, rnn_params={}, batch_si
     model.create()
     model.train(X, Y, epochs=5)
     Y_pred = model.predict(X)
+    print(Y_pred)
 
     return model, estimate_pairwise_interactions(batch, ranges, Y_pred, n_labels, spacing)
 
@@ -217,12 +230,12 @@ if __name__ == '__main__':
     data = load_data("../data/GM12878_10k", "../data/loop_sequences_GM12878.fasta", "../data/epigenomic_tracks/GM12878.pickle", test=test)
     seq_length = 100
     spacing = 50
-    Rs = [initial_pairwise_interactions(data, 3, seq_length, spacing)]
+    Rs = [initial_pairwise_interactions(data, 2, seq_length, spacing)]
     old_rnn = None
     print("Initial:", Rs[-1])
     for i in range(10):
         print("Iteration", i)
-        new_rnn, R = train_iteration(data, Rs[-1], seq_length=seq_length, spacing=spacing, old_rnn=old_rnn)
+        new_rnn, R = train_iteration(data, Rs[-1], batch_size=(20 if test else 40), seq_length=seq_length, spacing=spacing, old_rnn=old_rnn)
         Rs.append(R)
         old_rnn = new_rnn
         print(Rs[-1])
