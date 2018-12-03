@@ -11,16 +11,21 @@ def normalized_diff(s_i, s_j, H_ij, R):
     else:
         return abs(H_ij- R[s_i][s_j])/ H_ij
 
-def state_asg(H, R, f, res):
+def penalty(s_dp, s_rnn):
+    if s_dp != s_rnn:
+        return 0.75
+    else:
+        return 1
+
+def state_asg(H, R, f, penalty, res, rnn_states=None):
     """ Returns the state assignment of the interaction matrix H when
     given H at resolution res, the state interaction score matrix R, and the scoring
     function
     """
+    H_vals = np.log(1+H.values_grid(res))
     l = R.shape[0]
     _, n = H.coordinates_grid(res)
     start = H.range()[0]
-    #stop = start + n * res
-    #n = (stop-start)//res
     scores = np.zeros((l,n))
     parent = np.zeros((l,n))
 
@@ -31,8 +36,10 @@ def state_asg(H, R, f, res):
                 score = 0 #scores[state_prev][pos-1]
                 parent_state = state_prev
                 for p in reversed(range(pos)):
-                    score += f(state_curr, parent_state, np.log(1+H.value_at(pos*res+start, p*res+start)), R)
+                    score += f(state_curr, parent_state, H_vals[pos][p], R)
                     parent_state = int(parent[parent_state][p])
+                if rnn_states != None:
+                    score *= penalty(state_curr, rnn_states[pos])
                 cand_score.append(score)
             scores[state_curr][pos] = min(cand_score)
             parent[state_curr][pos] = int(np.argmin(np.array(cand_score)))
