@@ -9,7 +9,7 @@ def normalized_diff(s_i, s_j, H_ij, R):
     if H_ij == 0:
         return 0
     else:
-        return abs(H_ij- R[s_i][s_j])/ H_ij
+        return np.abs(H_ij- R[s_i][s_j]) / H_ij
 
 def penalty(s_dp, s_rnn):
     return 1
@@ -18,12 +18,12 @@ def penalty(s_dp, s_rnn):
     else:
         return 0'''
 
-def state_asg(H, R, f, penalty, res, rnn_states=None):
+def state_asg(H, R, f, penalty, res, rnn_states=None, return_matrices=False):
     """ Returns the state assignment of the interaction matrix H when
     given H at resolution res, the state interaction score matrix R, and the scoring
     function
     """
-    H_vals = np.log(1+H.values_grid(res))
+    H_vals = H.values_grid(res)
     l = R.shape[0]
     _, n = H.coordinates_grid(res)
     start = H.range()[0]
@@ -34,11 +34,12 @@ def state_asg(H, R, f, penalty, res, rnn_states=None):
         for state_curr in range(l):
             cand_score = []
             for state_prev in range(l):
-                score = 0 #scores[state_prev][pos-1]
+                score = scores[state_prev][pos-1]
                 parent_state = state_prev
                 for p in reversed(range(pos)):
-                    score += f(state_curr, parent_state, H_vals[pos][p], R)
+                    score += f(state_curr, parent_state, H_vals[pos][p], R) / pos
                     parent_state = int(parent[parent_state][p])
+                score += f(state_curr, state_curr, H_vals[pos][pos], R) / pos
                 if rnn_states is not None:
                     score *= penalty(state_curr, rnn_states[pos])
                 cand_score.append(score)
@@ -52,6 +53,8 @@ def state_asg(H, R, f, penalty, res, rnn_states=None):
         parent_state = int(parent[state_curr][p])
         state_curr = parent_state
         path.append(parent_state)
+    if return_matrices:
+        return scores, parent, np.array(list(reversed(path)))
     return np.array(list(reversed(path)))
 
 def predicted_matrix_worker(S, R):

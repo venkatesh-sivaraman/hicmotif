@@ -108,7 +108,7 @@ def interpolate_state_labels(state_labels, original_spacing, new_spacing):
     f = interpolate.interp1d(np.arange(0, max_x, original_spacing), state_labels, kind='nearest')
     return f(np.arange(0, max_x - original_spacing + 1, new_spacing))
 
-def estimate_pairwise_interactions(data, ranges, Y, n_labels, spacing):
+def estimate_pairwise_interactions(data, ranges, Y, n_labels, seq_length, spacing):
     """
     Produces a pairwise interaction matrix R of size n_labels x n_labels. Each
     element is the ML estimate of the interaction frequency between the states
@@ -117,6 +117,7 @@ def estimate_pairwise_interactions(data, ranges, Y, n_labels, spacing):
     R = np.zeros((n_labels, n_labels))
     counts = np.zeros((n_labels, n_labels))
     for (start, stop), (_, mat) in zip(ranges, data):
+        print(mat.identifier)
         r = mat.range()
         # Get meshgrid for interaction matrix
         loci_x, loci_y, dim = mat.meshgrid(spacing, start_val=(seq_length // spacing) * spacing, max_dim=stop - start)
@@ -126,7 +127,7 @@ def estimate_pairwise_interactions(data, ranges, Y, n_labels, spacing):
 
         # Get meshgrid for states
         states_1, states_2 = np.meshgrid(Y[start:start + dim], Y[start:start + dim])
-        vals = np.log(1 + mat.value_at(loci_x, loci_y))
+        vals = mat.value_at(loci_x, loci_y)
         if np.sum(np.isnan(vals)) > 0:
             print("Shouldn't happen")
 
@@ -207,36 +208,59 @@ def train_iteration(data, R, seq_length=100, spacing=10, rnn_params={}, batch_si
 
     model = rnn.RNNModel(n_labels=n_labels, n_features=X.shape[1], sequence_length=seq_length, **rnn_params)
     model.create()
-    model.train(X, Y, epochs=5)
+    model.train(X, Y, epochs=10)
     Y_pred = model.predict(X)
-    print(Y_pred)
+    print("Prediction composition on previously-trained:", np.unique(Y_pred, return_counts=True))
 
-    return model, estimate_pairwise_interactions(batch, ranges, Y_pred, n_labels, spacing)
+    return model, estimate_pairwise_interactions(batch, ranges, Y_pred, n_labels, seq_length, spacing)
 
-def initial_pairwise_interactions(data, n_labels, seq_length, spacing):
+def initial_pairwise_interactions(data, n_labels, batch_size=10, bound=0.25):
     """
     Generates an random initial R matrix of dimension n_labels x n_labels given
     the data.
-    """
-    # Generate a random batch of data
-    #seq, mat = data[np.random.choice(len(data))]
 
-    # Choose n_labels random positions
-    #positions =
-    return np.array([[7, 4], [4, 7]])
+    data: a list of tuples (Sequence, InteractionMatrix) as generated from
+        load_data.
+    batch_size: the number of elements of data to select randomly to use in this
+        iteration.
+    """
+    def shear_matrix(ssm):
+        # Each column shifts one more down
+        new_ssm = np.zeros(ssm.shape)
+        for n in range(ssm.shape[0]):
+            new_ssm[:,n] = np.roll(ssm[:,n], -n)
+        return new_ssm
+
+    batch_H = [shear_matrix(data[i][1].values_grid()) for i in range(batch_size)]
+    diagonal_avg = 0
+    off_diagonal_avg = 0
+    for i in range(len(batch_H)):
+        H = batch_H[i]
+        bound_len = int(bound*H.shape[0])
+        diagonal_avg += np.average(np.concatenate((H[:bound_len//2,:], H[H.shape[0] - bound_len//2:,:])))
+        off_diagonal_avg += np.average(H[bound_len//2:H.shape[0] - bound_len//2,:])
+
+    diagonal_avg /= len(batch_H)
+    off_diagonal_avg /= len(batch_H)
+
+    R = np.full((n_labels,n_labels), off_diagonal_avg, dtype=float)
+    np.fill_diagonal(R, diagonal_avg)
+    return R
 
 if __name__ == '__main__':
-    test = sys.argv[1] == "test"
+    test = len(sys.argv) > 1 and sys.argv[1] == "test"
     data = load_data("../data/GM12878_10k", "../data/loop_sequences_GM12878.fasta", "../data/epigenomic_tracks/GM12878.pickle", test=test)
     seq_length = 100
-    spacing = 50
-    Rs = [initial_pairwise_interactions(data, 2, seq_length, spacing)]
+    spacing = 50 if test else 10
+    Rs = [initial_pairwise_interactions(data, 2)]
     old_rnn = None
     print("Initial:", Rs[-1])
     for i in range(10):
         print("Iteration", i)
         new_rnn, R = train_iteration(data, Rs[-1], batch_size=(20 if test else 40), seq_length=seq_length, spacing=spacing, old_rnn=old_rnn)
         Rs.append(R)
+        if not os.path.exists("../data/rnns"): os.mkdir("../data/rnns")
+        new_rnn.model.save("../data/rnns/iteration_{}.hd5".format(i))
         old_rnn = new_rnn
         print(Rs[-1])
     print(Rs)
