@@ -30,29 +30,22 @@ def state_asg(H, R, f, penalty, res, rnn_states=None, return_matrices=False):
     scores = np.zeros((l,n))
     parent = np.zeros((l,n))
 
-    store_change = []
     for pos in range(1, n):
         for state_curr in range(l):
             cand_score = []
             for state_prev in range(l):
-                components_score = []
                 score = scores[state_prev][pos-1]
-                components_score.append(scores[state_prev][pos-1])
                 parent_state = state_prev
                 #score += f(state_curr, state_curr, H_vals[pos][pos], R)
                 #components_score.append(f(state_curr, state_curr, H_vals[pos][pos], R))
                 for p in reversed(range(pos)): #max(pos-100,0),
                     weight = ((pos-p)/pos) #(p/pos)**2 #
                     score += weight*f(state_curr, parent_state, H_vals[pos][p], R)
-                    components_score.append(weight*f(state_curr, parent_state, H_vals[pos][p], R))
                     parent_state = int(parent[parent_state][p])
                 score += f(state_curr, state_curr, H_vals[pos][pos], R) / pos
                 if rnn_states is not None:
                     score *= penalty(state_curr, rnn_states[pos])
                 cand_score.append(score)
-                print("score components",components_score, " pos", pos, " state", (state_curr, state_prev))
-                if pos == 187:
-                    store_change.append(components_score)
             scores[state_curr][pos] = min(cand_score)
             parent[state_curr][pos] = int(np.argmin(np.array(cand_score)))
 

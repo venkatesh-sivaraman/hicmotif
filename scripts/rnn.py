@@ -5,7 +5,7 @@ import numpy as np
 class RNNModel:
     """Wraps a Keras RNN model."""
 
-    def __init__(self, recurrent_nodes=[25], dense_nodes=[5, 25], n_labels=2, n_features=0, sequence_length=20, dropout=0.2):
+    def __init__(self, recurrent_nodes=[25], dense_nodes=[25, 25], n_labels=2, n_features=0, sequence_length=20, dropout=0.2):
         """
         recurrent_nodes: a list of numbers of LSTM nodes to use in each layer
         dense_nodes: a list of numbers of dense nodes to use in each layer after

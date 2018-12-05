@@ -116,6 +116,7 @@ def estimate_pairwise_interactions(data, ranges, Y, n_labels, seq_length, spacin
     """
     R = np.zeros((n_labels, n_labels))
     counts = np.zeros((n_labels, n_labels))
+
     for (start, stop), (_, mat) in zip(ranges, data):
         print(mat.identifier)
         r = mat.range()
@@ -124,10 +125,10 @@ def estimate_pairwise_interactions(data, ranges, Y, n_labels, seq_length, spacin
         if dim > stop - start:
             print("Too large dimension, skipping: {} vs {} - {}".format(dim, stop, start))
             continue
+        vals = mat.value_at(loci_x, loci_y)
 
         # Get meshgrid for states
         states_1, states_2 = np.meshgrid(Y[start:start + dim], Y[start:start + dim])
-        vals = mat.value_at(loci_x, loci_y)
         if np.sum(np.isnan(vals)) > 0:
             print("Shouldn't happen")
 
@@ -206,9 +207,12 @@ def train_iteration(data, R, seq_length=100, spacing=10, rnn_params={}, batch_si
 
     print(X.shape, Y.shape)
 
-    model = rnn.RNNModel(n_labels=n_labels, n_features=X.shape[1], sequence_length=seq_length, **rnn_params)
-    model.create()
-    model.train(X, Y, epochs=10)
+    if old_rnn is None:
+        model = rnn.RNNModel(n_labels=n_labels, n_features=X.shape[1], sequence_length=seq_length, **rnn_params)
+        model.create()
+    else:
+        model = old_rnn
+    model.train(X, Y, epochs=20)
     Y_pred = model.predict(X)
     print("Prediction composition on previously-trained:", np.unique(Y_pred, return_counts=True))
 
@@ -251,8 +255,8 @@ if __name__ == '__main__':
     test = len(sys.argv) > 1 and sys.argv[1] == "test"
     data = load_data("../data/GM12878_10k", "../data/loop_sequences_GM12878.fasta", "../data/epigenomic_tracks/GM12878.pickle", test=test)
     seq_length = 100
-    spacing = 50 if test else 10
-    Rs = [initial_pairwise_interactions(data, 2)]
+    spacing = 50# if test else 10
+    Rs = [initial_pairwise_interactions(data, 5)]
     old_rnn = None
     print("Initial:", Rs[-1])
     for i in range(10):

@@ -111,7 +111,7 @@ class InteractionMatrix:
                 loci_values.append(val)
 
         # Build linear interpolator
-        self.interpolator = interpolate.NearestNDInterpolator(loci_coords, np.log(1 + np.array(loci_values)))
+        self.interpolator = interpolate.LinearNDInterpolator(loci_coords, np.log(1 + np.array(loci_values)))
 
     def meshgrid(self, resolution=None, start_val=None, max_dim=None):
         """
