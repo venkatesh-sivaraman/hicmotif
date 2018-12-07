@@ -49,8 +49,7 @@ def state_asg(H, R, f, penalty, res, rnn_states=None, return_matrices=False):
             scores[state_curr][pos] = min(cand_score)
             parent[state_curr][pos] = int(np.argmin(np.array(cand_score)))
 
-
-    state_curr = np.argmin(parent[:,-1])
+    state_curr = np.argmin(scores[:,-1])
     path = [state_curr]
     for p in reversed(range(1, n)):
         parent_state = int(parent[state_curr][p])
@@ -58,7 +57,7 @@ def state_asg(H, R, f, penalty, res, rnn_states=None, return_matrices=False):
         path.append(parent_state)
     if return_matrices:
         return scores, parent, np.array(list(reversed(path)))
-    return np.array(list(reversed(path)))
+    return np.min(scores[:,-1]), np.array(list(reversed(path)))
 
 def predicted_matrix_worker(S, R):
     """Returned matrix of predicted values given the state assignments S

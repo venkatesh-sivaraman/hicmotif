@@ -1,6 +1,6 @@
 import os, sys
 import numpy as np
-import rnn
+#import rnn
 import models
 import pickle
 from Bio import SeqIO
@@ -8,6 +8,10 @@ from update_state_assignments import state_asg, normalized_diff, penalty
 from scipy import interpolate
 import multiprocessing as mp
 from functools import partial
+
+FRACTION_OLD_R = 0.25
+CONVERGENCE_THRESHOLD = 0.05
+CONVERGENCE_NUM_ITERS = 5
 
 def load_pickles(filename):
     """
@@ -142,13 +146,13 @@ def estimate_pairwise_interactions(data, ranges, Y, n_labels, seq_length, spacin
     return R / counts
 
 
-def dp_worker(R, coarse_spacing, spacing, seq_length, batch_item):
+def dp_worker(R, coarse_spacing, spacing, seq_length, batch_item, trim=True):
     (_, H), rnn_labels = batch_item
-    print(H.identifier)
-    state_labels = state_asg(H, R, normalized_diff, penalty, coarse_spacing, rnn_labels)
+    score, state_labels = state_asg(H, R, normalized_diff, penalty, coarse_spacing, rnn_labels)
+    print(H.identifier, score)
     # Save the state labels that begin after the first seq_length region
     trimmed = interpolate_state_labels(state_labels, coarse_spacing, spacing)
-    return H.identifier, trimmed[seq_length // spacing:]
+    return H.identifier, score, (trimmed[seq_length // spacing:] if trim else trimmed)
 
 def train_iteration(data, R, seq_length=100, spacing=10, rnn_params={}, batch_size=40, old_rnn=None):
     """
@@ -188,7 +192,7 @@ def train_iteration(data, R, seq_length=100, spacing=10, rnn_params={}, batch_si
     rnn_iter = (Y_pred[start:stop] for start, stop in ranges) if old_rnn is not None else (None for _ in ranges)
     print("Prediction composition:", np.unique(Y_pred, return_counts=True))
 
-    for i, (id, trimmed) in enumerate(pool.imap(worker, zip(batch, rnn_iter), chunksize=2)):
+    for i, (id, _, trimmed) in enumerate(pool.imap(worker, zip(batch, rnn_iter), chunksize=2)):
         start, stop = ranges[i]
         #TODO: Don't allow these cases to pass
         if trimmed.shape[0] < stop - start:
@@ -207,16 +211,17 @@ def train_iteration(data, R, seq_length=100, spacing=10, rnn_params={}, batch_si
 
     print(X.shape, Y.shape)
 
-    if old_rnn is None:
+    '''if old_rnn is None:
         model = rnn.RNNModel(n_labels=n_labels, n_features=X.shape[1], sequence_length=seq_length, **rnn_params)
         model.create()
     else:
         model = old_rnn
     model.train(X, Y, epochs=20)
-    Y_pred = model.predict(X)
-    print("Prediction composition on previously-trained:", np.unique(Y_pred, return_counts=True))
+    Y_pred = model.predict(X)'''
+    print("Prediction composition on previously-trained:", np.unique(Y_single, return_counts=True))
 
-    return model, estimate_pairwise_interactions(batch, ranges, Y_pred, n_labels, seq_length, spacing)
+    new_R = estimate_pairwise_interactions(batch, ranges, Y_single, n_labels, seq_length, spacing)
+    return None, np.where(np.isnan(new_R), R, FRACTION_OLD_R * R + (1.0 - FRACTION_OLD_R) * new_R)
 
 def initial_pairwise_interactions(data, n_labels, batch_size=10, bound=0.25):
     """
@@ -228,6 +233,20 @@ def initial_pairwise_interactions(data, n_labels, batch_size=10, bound=0.25):
     batch_size: the number of elements of data to select randomly to use in this
         iteration.
     """
+    if int(np.log2(n_labels)) == np.log2(n_labels):
+        # Build a hierarchical matrix
+        R = np.zeros((1, 1))
+        scales = int(np.log2(n_labels))
+        for i in range(scales):
+            R = np.repeat(np.repeat(R, 2, axis=0), 2, axis=1)
+            R += np.diag(np.random.randint(4.0, 6.0, size=2 ** (i + 1)) / scales)
+            R += (np.random.random(size=R.shape) * 2.0 + 1.0) / scales
+            print(i, R)
+        return R
+    else:
+        R = np.diag(np.random.randint(2.0, 4.0, size=n_labels))
+        return R + np.random.random(size=(n_labels, n_labels)) * 2.0 + 1.0
+
     def shear_matrix(ssm):
         # Each column shifts one more down
         new_ssm = np.zeros(ssm.shape)
@@ -251,20 +270,40 @@ def initial_pairwise_interactions(data, n_labels, batch_size=10, bound=0.25):
     np.fill_diagonal(R, diagonal_avg)
     return R
 
+
 if __name__ == '__main__':
     test = len(sys.argv) > 1 and sys.argv[1] == "test"
-    data = load_data("../data/GM12878_10k", "../data/loop_sequences_GM12878.fasta", "../data/epigenomic_tracks/GM12878.pickle", test=test)
+    base = "../data/"
+    data = load_data(base + "GM12878_10k", base + "loop_sequences_GM12878.fasta", base + "epigenomic_tracks/GM12878.pickle", test=test)
     seq_length = 100
     spacing = 50# if test else 10
-    Rs = [initial_pairwise_interactions(data, 5)]
+    dim = int(sys.argv[-1]) if len(sys.argv) > (2 if test else 1) else 2
+    Rs = [initial_pairwise_interactions(data, dim)]
     old_rnn = None
     print("Initial:", Rs[-1])
-    for i in range(10):
+    i = 0
+    num_unchanging = 0
+    while num_unchanging < CONVERGENCE_NUM_ITERS:
         print("Iteration", i)
-        new_rnn, R = train_iteration(data, Rs[-1], batch_size=(20 if test else 40), seq_length=seq_length, spacing=spacing, old_rnn=old_rnn)
+        new_rnn, R = train_iteration(data, Rs[-1], batch_size=(20 if test else 50), seq_length=seq_length, spacing=spacing, old_rnn=old_rnn)
         Rs.append(R)
-        if not os.path.exists("../data/rnns"): os.mkdir("../data/rnns")
-        new_rnn.model.save("../data/rnns/iteration_{}.hd5".format(i))
+        #if not os.path.exists("../data/rnns"): os.mkdir("../data/rnns")
+        #new_rnn.model.save("../data/rnns/iteration_{}.hd5".format(i))
         old_rnn = new_rnn
         print(Rs[-1])
+        delta = np.nanmean(np.abs(Rs[-1] - Rs[-2]))
+        print("Delta:", delta)
+        if delta < CONVERGENCE_THRESHOLD:
+            num_unchanging += 1
+        else:
+            num_unchanging = 0
+        i += 1
     print(Rs)
+
+    out_path = base + "dp_assignments/assignments_{}.csv".format(os.getpid())
+    with open(out_path, 'w') as file:
+        pool = mp.Pool(processes=4)
+        worker = partial(dp_worker, Rs[-1], spacing * 10, spacing, seq_length, trim=False)
+        rnn_iter = (None for _ in data)
+        for i, (id, score, state_labels) in enumerate(pool.imap(worker, zip(data, rnn_iter), chunksize=10)):
+            file.write(','.join([id, str(score)] + [str(label) for label in state_labels]) + '\n')

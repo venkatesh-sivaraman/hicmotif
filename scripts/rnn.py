@@ -1,6 +1,11 @@
 from keras.models import Sequential
-from keras.layers import Input, LSTM, Dense
+from keras.layers import Input, LSTM, Dense, Dropout
 import numpy as np
+import models
+from Bio import SeqIO
+import pickle
+import os, sys
+from main import load_data, generate_X
 
 class RNNModel:
     """Wraps a Keras RNN model."""
@@ -32,8 +37,12 @@ class RNNModel:
                 self.model.add(LSTM(rec, input_shape=(self.n_features,self.sequence_length)))
             else:
                 self.model.add(LSTM(rec))
+            if self.dropout > 0.0:
+                self.model.add(Dropout(self.dropout))
         for size in self.dense_nodes:
             self.model.add(Dense(size, activation='relu'))
+            if self.dropout > 0.0:
+                self.model.add(Dropout(self.dropout))
         self.model.add(Dense(self.n_labels, activation='softmax'))
         self.model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
 
@@ -78,23 +87,58 @@ class RNNModel:
             new_Y[i * min_count: (i + 1) * min_count] = Y[indexes]
         return new_X, new_Y
 
+def load_training_data(path, n_labels, data, seq_length, spacing):
+    """
+    Loads pre-assigned state labels from a CSV file, associating the vectors with
+    the appropriate interaction matrix. Returns an X and Y matrix.
+    """
+    X, ranges = generate_X(data, seq_length, spacing)
+    range_mapping = {data[i][1].identifier: ranges[i] for i in range(len(data))}
+    seen_ids = set()
+
+    Y_single = np.zeros((X.shape[0],), dtype=int)
+    with open(path, 'r') as file:
+        for line in file:
+            comps = line.strip().split(',')
+            id = comps.pop(0)
+            if id not in range_mapping: continue
+            start, stop = range_mapping[id]
+            score = comps.pop(0)
+            asg = np.array([int(float(c)) for c in comps])[seq_length // spacing:]
+            assert asg.shape[0] >= stop - start, "incorrect length: {} vs {}-{} ({})".format(asg.shape[0], start, stop, stop - start)
+            Y_single[start:stop] = asg[:stop - start]
+            seen_ids.add(id)
+
+    assert len(seen_ids) == len(range_mapping), "missing identifiers: " + str(set(range_mapping.keys()) - seen_ids)
+    Y = np.zeros((X.shape[0], n_labels), dtype=int)
+    for i in range(Y_single.shape[0]):
+        Y[i,Y_single[i]] = 1
+    return X, Y
+
 
 if __name__ == '__main__':
-    import models
-    from Bio import SeqIO
-    import pickle
-    import os
-    # Test the RNNModel
-    model = RNNModel()
-    base_path = '/Users/venkatesh-sivaraman/Documents/School/MIT/6-047/proj/hicmotif/data/'
-    with open(os.path.join(base_path, 'epigenomic_tracks', 'GM12878.pickle'), 'rb') as file:
-        id, data = pickle.load(file)
-    seq = None
+    pid = sys.argv[1]
+    n_labels = int(sys.argv[2])
+    base = "../data/"
+    data = load_data(base + "GM12878_10k", base + "loop_sequences_GM12878.fasta", base + "epigenomic_tracks/GM12878.pickle")
+    seq_length = 100
+    spacing = 50# if test else 10
+    batch_size = 100
+    n_epochs = 100
+    model = None
 
-    for record in SeqIO.parse(os.path.join(base_path, 'loop_sequences_GM12878.fasta'), 'fasta'):
-        print(record.id.replace('chr', ''), id)
-        if record.id.replace('chr', '') != id: continue
-        seq = models.Sequence(id, str(record.seq), data)
-        break
+    for epoch in range(n_epochs):
+        # Random batch of data for each epoch
+        indexes = np.random.choice(len(data), size=(batch_size,), replace=False)
+        batch = [data[i] for i in indexes]
 
-    print(len(seq.seq))
+        X, Y = load_training_data(base + "dp_assignments/assignments_{}.csv".format(pid), n_labels, batch, seq_length, spacing)
+        if model is None:
+            model = RNNModel(recurrent_nodes=[100], dense_nodes=[50, 50], n_labels=Y.shape[1], n_features=X.shape[1], sequence_length=X.shape[2])
+            model.create()
+
+        print(X.shape, Y.shape)
+        model.train(X, Y, epochs=1, balance=False)
+        if epoch % 5 == 0 and epoch > 0:
+            if not os.path.exists(base + "rnns"): os.mkdir(base + "rnns")
+            model.model.save(base + "rnns/iteration_{}.hd5".format(epoch))
