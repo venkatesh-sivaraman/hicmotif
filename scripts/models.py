@@ -73,8 +73,8 @@ class InteractionMatrix:
         self.data = {(x, y): f for x, y, f in data}
         # Determine the resolution of the data
         self.resolution = xs[1] - xs[0]
-        if not all(xs[i] - xs[i - 1] == self.resolution for i in range(1, len(xs))):
-            raise ValueError("missing data: distances between available loci do not match inferred resolution")
+        #if not all(xs[i] - xs[i - 1] == self.resolution for i in range(1, len(xs))):
+        #    raise ValueError("missing data: distances between available loci do not match inferred resolution")
         self.build_interpolator()
 
     def range(self):

@@ -6,6 +6,7 @@ from Bio import SeqIO
 import pickle
 import os, sys
 from main import load_data, generate_X
+from keras.models import load_model
 
 class RNNModel:
     """Wraps a Keras RNN model."""
@@ -60,8 +61,8 @@ class RNNModel:
         if balance:
             new_X, new_Y = self.balance(Xs, Ys)
         else:
-            new_X, new_Y = X, Y
-        self.model.fit(new_X, new_Y, epochs=epochs, batch_size=100)
+            new_X, new_Y = Xs, Ys
+        self.model.fit(new_X, new_Y, epochs=epochs, batch_size=160)
 
     def predict(self, X):
         """
@@ -104,16 +105,107 @@ def load_training_data(path, n_labels, data, seq_length, spacing):
             if id not in range_mapping: continue
             start, stop = range_mapping[id]
             score = comps.pop(0)
-            asg = np.array([int(float(c)) for c in comps])[seq_length // spacing:]
+            asg = np.array([int(float(c)) for c in comps])
+            #asg = asg[seq_length // spacing:] != asg[seq_length // spacing - 1:-1]
             assert asg.shape[0] >= stop - start, "incorrect length: {} vs {}-{} ({})".format(asg.shape[0], start, stop, stop - start)
             Y_single[start:stop] = asg[:stop - start]
             seen_ids.add(id)
+            if len(seen_ids) == len(range_mapping): break
 
-    assert len(seen_ids) == len(range_mapping), "missing identifiers: " + str(set(range_mapping.keys()) - seen_ids)
+    #assert len(seen_ids) == len(range_mapping), "missing identifiers: " + str(set(range_mapping.keys()) - seen_ids)
+    seen_ranges = np.array(sorted([x for id in seen_ids for x in range(*range_mapping[id])]))
     Y = np.zeros((X.shape[0], n_labels), dtype=int)
     for i in range(Y_single.shape[0]):
         Y[i,Y_single[i]] = 1
-    return X, Y
+    return X[seen_ranges], Y[seen_ranges]
+
+def train_big(base, data, seq_length, spacing, batch_size, n_epochs):
+    """Trains an RNN using the full dataset and a predetermined architecture."""
+    model = None
+    #train_indexes = np.array([int(i) for i in open(base + "rnns_small_train_batch/train_indexes.txt").read().strip().split(",")]
+    train_indexes = np.random.choice(len(data), size=(int(len(data) * 0.2),), replace=False)
+    test_indexes = list(set(range(len(data))) - set(train_indexes))
+    print("Train: {}".format(list(train_indexes)))
+    #batch = [data[i] for i in train_indexes]
+    #X, Y = load_training_data(base + "dp_assignments/assignments_{}.csv".format(pid), n_labels, batch, seq_length, spacing)
+
+    for epoch in range(n_epochs):
+        # Random batch of data for each epoch
+        b_size = int(len(train_indexes) / 5)
+        start_idx = (epoch % 5) * b_size
+        indexes = train_indexes[start_idx:start_idx + b_size] #np.random.choice(len(train_indexes), size=(batch_size,), replace=False)
+        batch = [data[i] for i in indexes]
+
+        X, Y = load_training_data(base + "dp_assignments/assignments_{}.csv".format(pid), n_labels, batch, seq_length, spacing)
+        if model is None:
+            model = RNNModel(recurrent_nodes=[100], dense_nodes=[50, 50], n_labels=Y.shape[1], n_features=X.shape[1], sequence_length=X.shape[2])
+            #model.model = load_model(base + "rnns_small_train_batch/iteration_20.hd5")
+            model.create()
+
+        print(X.shape, Y.shape)
+        model.train(X, Y, epochs=1, balance=False)
+        if epoch % 5 == 4:
+            indexes = np.random.choice(len(test_indexes), size=(batch_size // 2,), replace=False)
+            X_test, Y_test = load_training_data(base + "dp_assignments/assignments_{}.csv".format(pid), n_labels, [data[i] for i in indexes], seq_length, spacing)
+            acc = np.sum(model.predict(X) == np.argmax(Y, axis=1)) / X.shape[0]
+            print("Evaluation:", acc)
+
+            dir = "rnns_predict_current_state"
+            if not os.path.exists(base + dir): os.mkdir(base + dir)
+            model.model.save(base + dir + "/iteration_{}.hd5".format(epoch))
+
+def test_architectures(base, data, seq_length, spacing, batch_size, n_epochs):
+    """Test various architectures for the RNN."""
+
+    # Determine shape of input with a trial set
+    X, Y = load_training_data(base + "dp_assignments/assignments_{}.csv".format(pid), n_labels, [data[0]], seq_length, spacing)
+    kwargs = {'n_labels': Y.shape[1], 'n_features': X.shape[1], 'sequence_length': X.shape[2]}
+    model_params = [
+        {'recurrent_nodes': [50], 'dense_nodes': [25, 25]},
+        {'recurrent_nodes': [100], 'dense_nodes': [25, 25]},
+        {'recurrent_nodes': [200], 'dense_nodes': [25, 25]},
+        {'recurrent_nodes': [100], 'dense_nodes': [50, 50]},
+        {'recurrent_nodes': [200], 'dense_nodes': [50, 50]},
+        {'recurrent_nodes': [100], 'dense_nodes': [100, 100]},
+        {'recurrent_nodes': [200], 'dense_nodes': [100, 100]},
+        {'recurrent_nodes': [100], 'dense_nodes': [100, 100, 100]},
+        {'recurrent_nodes': [200], 'dense_nodes': [100, 100, 100]},
+    ]
+
+    train_indexes = np.random.choice(len(data), size=(int(len(data) * 0.75),), replace=False)
+    test_indexes = list(set(range(len(data))) - set(train_indexes))
+    print("{} training, {} test".format(len(train_indexes), len(test_indexes)))
+
+    results = {}
+
+    for i, model_p in enumerate(model_params):
+        model_id = str(model_p)
+        model_p.update(kwargs)
+        model = RNNModel(**model_p)
+        model.create()
+
+        for epoch in range(n_epochs):
+            # Random batch of data for each epoch
+            indexes = np.random.choice(len(train_indexes), size=(batch_size,), replace=False)
+            batch = [data[train_indexes[i]] for i in indexes]
+
+            X, Y = load_training_data(base + "dp_assignments/assignments_{}.csv".format(pid), n_labels, batch, seq_length, spacing)
+            print(X.shape, Y.shape)
+
+            model.train(X, Y, epochs=1, balance=False)
+
+        # Evaluate
+        print("Evaluating...")
+        indexes = np.random.choice(len(test_indexes), size=(batch_size * 2,), replace=False)
+        batch = [data[i] for i in indexes]
+
+        X, Y = load_training_data(base + "dp_assignments/assignments_{}.csv".format(pid), n_labels, batch, seq_length, spacing)
+        print(X.shape, Y.shape)
+
+        acc = np.sum(model.predict(X) == np.argmax(Y, axis=1)) / X.shape[0]
+        results[model_id] = acc
+
+    return results
 
 
 if __name__ == '__main__':
@@ -125,20 +217,8 @@ if __name__ == '__main__':
     spacing = 50# if test else 10
     batch_size = 100
     n_epochs = 100
-    model = None
-
-    for epoch in range(n_epochs):
-        # Random batch of data for each epoch
-        indexes = np.random.choice(len(data), size=(batch_size,), replace=False)
-        batch = [data[i] for i in indexes]
-
-        X, Y = load_training_data(base + "dp_assignments/assignments_{}.csv".format(pid), n_labels, batch, seq_length, spacing)
-        if model is None:
-            model = RNNModel(recurrent_nodes=[100], dense_nodes=[50, 50], n_labels=Y.shape[1], n_features=X.shape[1], sequence_length=X.shape[2])
-            model.create()
-
-        print(X.shape, Y.shape)
-        model.train(X, Y, epochs=1, balance=False)
-        if epoch % 5 == 0 and epoch > 0:
-            if not os.path.exists(base + "rnns"): os.mkdir(base + "rnns")
-            model.model.save(base + "rnns/iteration_{}.hd5".format(epoch))
+    train_big(base, data, seq_length, spacing, batch_size, n_epochs)
+    #n_epochs = 50
+    #results = test_architectures(base, data, seq_length, spacing, batch_size, n_epochs)
+    #with open(base + "architectures_results.pickle", "wb") as file:
+    #    pickle.dump(results, file)
